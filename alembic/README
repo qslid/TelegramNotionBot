@@ -1,0 +1,5 @@
+Async Alembic migrations for the Telegram→Notion bot.
+
+- env.py loads DATABASE_URL from the environment / .env
+- Models live in bot.database.models (Base.metadata)
+- Apply: alembic upgrade head

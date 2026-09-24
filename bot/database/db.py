@@ -1,14 +1,20 @@
 """Async SQLAlchemy engine / session factory.
 
-Supports SQLite (default) and PostgreSQL via DATABASE_URL.
-For PostgreSQL use: postgresql+asyncpg://user:pass@host:5432/dbname
+Supports SQLite (local fallback) and PostgreSQL via DATABASE_URL.
+Recommended: postgresql+asyncpg://user:pass@host:5432/dbname
+
+Schema is owned by Alembic migrations (`alembic upgrade head`).
+`init_db` only opens the engine/session factory — it does not create tables,
+so it stays compatible with migrations and avoids double-create drift.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from typing import Optional
 
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -17,10 +23,14 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from bot.config import get_settings
-from bot.database.models import Base
+
+logger = logging.getLogger(__name__)
 
 _engine: Optional[AsyncEngine] = None
 _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
+
+# Tables expected after `alembic upgrade head`
+_EXPECTED_TABLES = frozenset({"users", "notion_credentials", "usage_counters"})
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -36,7 +46,7 @@ def try_session_factory() -> Optional[async_sessionmaker[AsyncSession]]:
 
 
 def _normalize_url(url: str) -> str:
-    """Ensure SQLite URLs use the aiosqlite driver."""
+    """Ensure driver prefixes for async engines."""
     if url.startswith("sqlite:///") and "+aiosqlite" not in url:
         return url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
     if url.startswith("postgresql://"):
@@ -46,8 +56,28 @@ def _normalize_url(url: str) -> str:
     return url
 
 
+async def _assert_schema(engine: AsyncEngine) -> None:
+    """Warn (do not auto-create) if migrations have not been applied."""
+
+    def _check(sync_conn) -> list[str]:
+        existing = set(inspect(sync_conn).get_table_names())
+        return sorted(_EXPECTED_TABLES - existing)
+
+    async with engine.connect() as conn:
+        missing = await conn.run_sync(_check)
+        if missing:
+            logger.warning(
+                "Database schema incomplete (missing: %s). "
+                "Run `alembic upgrade head` before starting the bot.",
+                ", ".join(missing),
+            )
+        else:
+            # Cheap connectivity probe
+            await conn.execute(text("SELECT 1"))
+
+
 async def init_db() -> None:
-    """Create engine, session factory, and tables."""
+    """Create engine and session factory. Schema comes from Alembic migrations."""
     global _engine, _session_factory
 
     settings = get_settings()
@@ -69,8 +99,7 @@ async def init_db() -> None:
         expire_on_commit=False,
     )
 
-    async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    await _assert_schema(_engine)
 
 
 async def dispose_db() -> None:

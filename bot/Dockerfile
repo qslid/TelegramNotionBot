@@ -8,6 +8,7 @@ RUN apk add --no-cache \
         build-base \
         libffi-dev \
         openssl-dev \
+        postgresql-dev \
     && pip install --no-cache-dir --upgrade pip wheel
 
 COPY requirements.txt .
@@ -19,7 +20,7 @@ FROM python:3.12-alpine AS runtime
 
 # Non-root user for safer runtime
 RUN addgroup -S bot && adduser -S -G bot bot \
-    && apk add --no-cache libffi openssl \
+    && apk add --no-cache libffi openssl libpq \
     && rm -rf /var/cache/apk/*
 
 ENV PYTHONUNBUFFERED=1 \
@@ -27,13 +28,15 @@ ENV PYTHONUNBUFFERED=1 \
     # Keep memory footprint lower for CPython
     PYTHONMALLOC=malloc \
     PIP_NO_CACHE_DIR=1 \
-    # Default DB path inside the container volume
+    # Default DB path inside the container volume (override with Postgres URL in compose)
     DATABASE_URL=sqlite+aiosqlite:////data/bot.db
 
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
 COPY bot ./bot
+COPY alembic.ini .
+COPY alembic ./alembic
 COPY requirements.txt .
 
 RUN mkdir -p /data && chown -R bot:bot /app /data
@@ -42,4 +45,5 @@ USER bot
 VOLUME ["/data"]
 
 # Long-polling bot — no exposed HTTP port required.
+# Schema: run `alembic upgrade head` (compose `migrate` service) before starting.
 CMD ["python", "-m", "bot.main"]

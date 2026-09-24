@@ -8,8 +8,9 @@ Async Telegram bot (aiogram 3) that saves text and links into a Notion database.
 - [aiogram](https://docs.aiogram.dev/) 3.x
 - [notion-client](https://github.com/ramnes/notion-sdk-py) + httpx
 - pydantic-settings
-- SQLAlchemy 2 (async) — SQLite by default, PostgreSQL via `DATABASE_URL`
-- Docker (Alpine, multi-stage, low-RAM)
+- SQLAlchemy 2 (async) + **Alembic** migrations
+- **PostgreSQL** (recommended) via `asyncpg`; SQLite remains a local fallback
+- Docker Compose (Postgres Alpine) + Alpine bot image
 
 ## Project layout
 
@@ -23,6 +24,9 @@ bot/
   locales/        # en.json / ru.json
   main.py
   Dockerfile
+alembic/          # Async migrations (source of truth for schema)
+alembic.ini
+docker-compose.yml
 requirements.txt
 .env.example
 ```
@@ -50,51 +54,99 @@ In the bot chat: **Settings → Connect Notion** → paste token → paste datab
 
 ```bash
 cp .env.example .env
-# edit BOT_TOKEN (and optional limits / DATABASE_URL)
+# edit BOT_TOKEN; DATABASE_URL defaults to local Postgres from compose
 ```
 
-| Variable | Default | Meaning |
+| Variable | Default / example | Meaning |
 |---|---|---|
-| `BOT_TOKEN` | — | Telegram bot token (required) |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./bot.db` | Async SQLAlchemy URL |
+| `BOT_TOKEN` | — | Telegram bot token (required to run the bot) |
+| `DATABASE_URL` | `postgresql+asyncpg://bot:bot@localhost:5432/telegram_notion` | Async SQLAlchemy URL (Postgres recommended) |
 | `DAILY_REQUEST_LIMIT` | `100` | Per-user daily quota |
 | `MONTHLY_REQUEST_LIMIT` | `2000` | Per-user monthly quota |
 | `THROTTLE_RATE_SECONDS` | `2.0` | Min interval between messages |
 | `MAX_FILE_SIZE_BYTES` | `20971520` | 20 MB media gate |
 | `DEFAULT_LOCALE` | `en` | Fallback if `language_code` is unknown |
 
-PostgreSQL example:
+SQLite fallback (no Docker DB):
 
 ```env
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/telegram_notion
+DATABASE_URL=sqlite+aiosqlite:///./bot.db
 ```
 
-(Install `asyncpg` additionally when using Postgres.)
+## 4. Database (Postgres + Alembic)
 
-## 4. Run locally
+Schema is owned by **Alembic**. `init_db` opens the engine only — it does **not** call `create_all`.
+
+### Bring up Postgres
+
+```bash
+docker compose up -d db
+```
+
+Defaults: user `bot`, password `bot`, database `telegram_notion`, port `5432`.
+
+### Apply migrations
+
+From the host (with venv + deps installed):
+
+```bash
+alembic upgrade head
+```
+
+Or via Compose (builds the Alpine image, runs once):
+
+```bash
+docker compose run --rm migrate
+```
+
+### Connection string example
+
+```env
+DATABASE_URL=postgresql+asyncpg://bot:bot@localhost:5432/telegram_notion
+```
+
+Inside Compose (bot → db service):
+
+```env
+DATABASE_URL=postgresql+asyncpg://bot:bot@db:5432/telegram_notion
+```
+
+### Verify tables
+
+```bash
+docker compose exec db psql -U bot -d telegram_notion -c '\dt'
+# expect: users, notion_credentials, usage_counters, alembic_version
+```
+
+## 5. Run locally
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+cp .env.example .env        # set BOT_TOKEN; keep Postgres URL or switch to SQLite
+alembic upgrade head
 python -m bot.main
 ```
 
 Locale is chosen automatically from Telegram `language_code` (`ru` / `en`).
 
-## 5. Run with Docker
+## 6. Run with Docker Compose
 
-From the **repo root** (so `bot/` is the build context sibling of requirements):
+```bash
+cp .env.example .env   # set BOT_TOKEN
+docker compose up -d db
+docker compose run --rm migrate
+docker compose --profile bot up -d
+```
+
+Or build/run the bot image alone (SQLite volume):
 
 ```bash
 docker build -f bot/Dockerfile -t telegram-notion-bot .
-docker run --rm \
-  --env-file .env \
-  -v notion-bot-data:/data \
-  telegram-notion-bot
+# still run migrations against your DATABASE_URL first
+docker run --rm --env-file .env -v notion-bot-data:/data telegram-notion-bot
 ```
-
-The image runs as a non-root user, uses Alpine, and stores SQLite under `/data/bot.db` by default.
 
 ## Features (scaffold)
 

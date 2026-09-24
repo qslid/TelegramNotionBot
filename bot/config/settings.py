@@ -24,7 +24,11 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="sqlite+aiosqlite:///./bot.db",
         alias="DATABASE_URL",
-        description="SQLAlchemy async URL (SQLite default, PostgreSQL optional)",
+        description=(
+            "SQLAlchemy async URL. Recommended: "
+            "postgresql+asyncpg://bot:bot@localhost:5432/telegram_notion "
+            "(SQLite remains a local fallback)."
+        ),
     )
 
     daily_request_limit: int = Field(default=100, alias="DAILY_REQUEST_LIMIT", ge=1)

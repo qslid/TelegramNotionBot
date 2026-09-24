@@ -1,0 +1,71 @@
+# Local / low-resource Postgres (+ optional bot) for the Telegram→Notion bot.
+# Usage:
+#   docker compose up -d db
+#   docker compose run --rm migrate
+#   docker compose --profile bot up -d
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: telegram-notion-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: bot
+      POSTGRES_DB: telegram_notion
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bot -d telegram_notion"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    # Soft caps for ~256MB-ish hosts (adjust as needed)
+    shm_size: 64mb
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=50
+      - -c
+      - effective_cache_size=128MB
+
+  migrate:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    container_name: telegram-notion-migrate
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Placeholder token so Settings can load if anything imports it; migrate uses DATABASE_URL.
+      BOT_TOKEN: ${BOT_TOKEN:-000000:migrate-placeholder}
+      DATABASE_URL: postgresql+asyncpg://bot:bot@db:5432/telegram_notion
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  bot:
+    profiles: ["bot"]
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    container_name: telegram-notion-bot
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://bot:bot@db:5432/telegram_notion
+    # No volume for SQLite when using Postgres
+
+volumes:
+  pgdata:
